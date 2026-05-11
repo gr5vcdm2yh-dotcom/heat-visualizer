@@ -1,4 +1,4 @@
-cat << 'EOF' > heat_visualizer.py
+
 import streamlit as st
 import numpy as np
 import time
@@ -9,28 +9,18 @@ GRID_H = 36
 AMBIENT_TEMP = 20.0
 MAX_TEMP = 100.0
 
-# 熱拡散率の設定
-DIFFUSIVITY = {
-    0: 0.015,  # 空気
-    1: 0.30,   # 金属
-    2: 0.06,   # 木材
-    3: 0.005,  # 断熱材
-}
+DIFFUSIVITY = {0: 0.015, 1: 0.30, 2: 0.06, 3: 0.005}
 
-# --- ヘルパー関数 ---
 def heat_color(temp):
-    t = (temp - AMBIENT_TEMP) / (MAX_TEMP - AMBIENT_TEMP)
-    t = np.clip(t, 0.0, 1.0)
+    t = np.clip((temp - AMBIENT_TEMP) / (MAX_TEMP - AMBIENT_TEMP), 0.0, 1.0)
     blue, yellow, red = np.array([40, 80, 220]), np.array([255, 230, 40]), np.array([230, 40, 30])
     if t < 0.5:
-        a = t / 0.5
-        rgb = (1 - a) * blue + a * yellow
+        rgb = (1 - t/0.5) * blue + (t/0.5) * yellow
     else:
         a = (t - 0.5) / 0.5
         rgb = (1 - a) * yellow + a * red
     return rgb.astype(int)
 
-# --- シミュレーションロジック ---
 def simulate_step(temp_grid, material_grid):
     D = np.vectorize(DIFFUSIVITY.get)(material_grid).astype(float)
     Tp, Dp = np.pad(temp_grid, 1, mode="edge"), np.pad(D, 1, mode="edge")
@@ -40,7 +30,6 @@ def simulate_step(temp_grid, material_grid):
     dT = (Du*(up-center) + Dd*(down-center) + Dl*(left-center) + Dr*(right-center)) - cooling*(center-AMBIENT_TEMP)
     return np.clip(center + dt * dT, AMBIENT_TEMP, MAX_TEMP)
 
-# --- Streamlit UI ---
 st.set_page_config(page_title="熱拡散シミュレーター", layout="wide")
 st.title("🔥 熱の広がり方可視化アプリ")
 if 'temp' not in st.session_state:
@@ -75,4 +64,3 @@ while True:
             if st.session_state.material[r, c] != 0: img[r, c] = np.clip(img[r, c] + 20, 0, 255)
     placeholder.image(img.astype(np.uint8), use_container_width=True)
     time.sleep(0.05)
-EOF
