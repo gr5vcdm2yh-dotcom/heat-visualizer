@@ -1,118 +1,120 @@
 import streamlit as st
 import numpy as np
 import time
+from streamlit_drawable_canvas import st_canvas
 
-# --- 基本設定 ---
-GRID_W = 60
-GRID_H = 36
+# --- 設定 ---
+GRID_W, GRID_H = 60, 36
 AMBIENT_TEMP = 20.0
 MAX_TEMP = 100.0
 
-# 物理定数（拡散率）
-DIFFUSIVITY = {0: 0.015, 1: 0.30, 2: 0.06, 3: 0.005}
+# 材料ごとの物性と表示色
+MATERIALS = {
+    0: {"name": "空気", "diff": 0.015, "color": [240, 240, 240]}, # 薄グレー
+    1: {"name": "金属", "diff": 0.30,  "color": [100, 100, 110]}, # 濃グレー
+    2: {"name": "木材", "diff": 0.06,  "color": [139, 69, 19]},   # 茶色
+    3: {"name": "断熱材", "diff": 0.005, "color": [0, 255, 255]}   # 水色
+}
 
-# --- 物理計算ロジック ---
+# --- 物理計算 ---
 def simulate_step(temp_grid, material_grid):
-    D = np.vectorize(DIFFUSIVITY.get)(material_grid).astype(float)
+    # 拡散率のマップ作成
+    D = np.vectorize(lambda x: MATERIALS[x]["diff"])(material_grid).astype(float)
     Tp, Dp = np.pad(temp_grid, 1, mode="edge"), np.pad(D, 1, mode="edge")
-    center = Tp[1:-1, 1:-1]
     
-    # 上下左右の温度と拡散率
+    center = Tp[1:-1, 1:-1]
     up, down = Tp[:-2, 1:-1], Tp[2:, 1:-1]
     left, right = Tp[1:-1, :-2], Tp[1:-1, 2:]
+    
+    # 境界での熱伝導率の平均
     Du, Dd = 0.5*(D + Dp[:-2, 1:-1]), 0.5*(D + Dp[2:, 1:-1])
     Dl, Dr = 0.5*(D + Dp[1:-1, :-2]), 0.5*(D + Dp[1:-1, 2:])
 
-    dt, cooling = 0.18, 0.005
+    dt, cooling = 0.15, 0.005
     dT = (Du*(up-center) + Dd*(down-center) + Dl*(left-center) + Dr*(right-center)) - cooling*(center-AMBIENT_TEMP)
     return np.clip(center + dt * dT, AMBIENT_TEMP, MAX_TEMP)
 
-def get_rgb_image(temp_grid, material_grid, px=None, py=None):
-    # 温度を0-1に正規化してヒートマップ作成
-    t_norm = (temp_grid - AMBIENT_TEMP) / (MAX_TEMP - AMBIENT_TEMP)
-    t_norm = np.clip(t_norm, 0, 1)
-    
-    img = np.zeros((GRID_H, GRID_W, 3), dtype=np.uint8)
-    # 簡易色計算 (Blue -> Yellow -> Red)
-    img[:, :, 0] = (t_norm * 255).astype(np.uint8) # Red
-    img[:, :, 1] = (np.sin(t_norm * np.pi) * 200).astype(np.uint8) # Green
-    img[:, :, 2] = ((1 - t_norm) * 200).astype(np.uint8) # Blue
-    
-    # 材料の輪郭をうっすら表示
-    img[material_grid != 0] = np.clip(img[material_grid != 0].astype(int) + 30, 0, 255).astype(np.uint8)
-    
-    # プレビュー用カーソルの描画
-    if px is not None and py is not None:
-        img[max(0,py-1):py+2, px, :] = [255, 255, 255] # 白い十字
-        img[py, max(0,px-1):px+2, :] = [255, 255, 255]
-        
-    return img
-
-# --- Streamlit UI構成 ---
+# --- UI設定 ---
 st.set_page_config(page_title="熱拡散シミュレーター Pro", layout="wide")
-st.title("🔥 物理シミュレーション：熱の拡散と断熱")
+st.title("🌡️ マウスで描ける熱拡散シミュレーター")
 
 if 'temp' not in st.session_state:
     st.session_state.temp = np.full((GRID_H, GRID_W), AMBIENT_TEMP)
     st.session_state.material = np.zeros((GRID_H, GRID_W), dtype=int)
-    st.session_state.running = True
 
-# サイドバー：操作パネル
+# --- サイドバー ---
 with st.sidebar:
-    st.header("🛠 操作ツール")
-    mode = st.radio("モード", ["材料を配置", "加熱する", "消しゴム", "温度を測る"])
+    st.header("🖊️ 描画ツール")
+    tool = st.radio("モード選択", ["材料を配置", "熱を加える", "消しゴム"])
     
-    if mode == "材料を配置":
-        mat_type = st.selectbox("材料", ["金属 (速い)", "木材 (普通)", "断熱材 (遅い)"])
-        mat_id = {"金属 (速い)": 1, "木材 (普通)": 2, "断熱材 (遅い)": 3}[mat_type]
+    selected_mat = 1
+    if tool == "材料を配置":
+        mat_choice = st.selectbox("材料の種類", ["金属", "木材", "断熱材"])
+        selected_mat = {"金属": 1, "木材": 2, "断熱材": 3}[mat_choice]
     
     st.divider()
-    st.subheader("📍 位置調整 (Preview)")
-    px = st.slider("X座標", 0, GRID_W-1, GRID_W//2)
-    py = st.slider("Y座標", 0, GRID_H-1, GRID_H//2)
-    
-    col1, col2 = st.columns(2)
-    if col1.button("実行 (Apply)", use_container_width=True):
-        y_r, x_r = slice(max(0,py-1), py+2), slice(max(0,px-1), px+2)
-        if mode == "材料を配置": st.session_state.material[y_r, x_r] = mat_id
-        elif mode == "加熱する": st.session_state.temp[y_r, x_r] = MAX_TEMP
-        elif mode == "消しゴム": 
-            st.session_state.material[y_r, x_r] = 0
-            st.session_state.temp[y_r, x_r] = AMBIENT_TEMP
-
-    if col2.button("全リセット", use_container_width=True):
+    if st.button("リセット"):
         st.session_state.temp.fill(AMBIENT_TEMP)
         st.session_state.material.fill(0)
+        st.rerun()
 
-    st.divider()
-    st.session_state.running = st.checkbox("シミュレーションを実行中", value=True)
+    st.write("※マウスで右のキャンバスをなぞってください")
 
-# メインエリア：情報表示
-info_col, chart_col = st.columns([1, 3])
+# --- メインエリア：キャンバス描画 ---
+# 背景画像の作成（現在の材料と温度を合成）
+def generate_preview():
+    img = np.zeros((GRID_H, GRID_W, 3), dtype=np.uint8)
+    for m_id, m_info in MATERIALS.items():
+        mask = st.session_state.material == m_id
+        img[mask] = m_info["color"]
+    
+    # 温度による赤みをオーバーレイ
+    t_factor = (st.session_state.temp - AMBIENT_TEMP) / (MAX_TEMP - AMBIENT_TEMP)
+    img[:, :, 0] = np.clip(img[:, :, 0] + t_factor * 200, 0, 255) # 赤を強く
+    return img
 
-with info_col:
-    current_t = st.session_state.temp[py, px]
-    st.metric("選択地点の温度", f"{current_t:.2f} ℃")
-    mat_name = {0:"空気", 1:"金属", 2:"木材", 3:"断熱材"}[st.session_state.material[py, px]]
-    st.write(f"材質: **{mat_name}**")
+bg_img = generate_preview()
 
-# メイン画面の描画
+col_canvas, col_info = st.columns([3, 1])
+
+with col_canvas:
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=2,
+        stroke_color="#000000",
+        background_image=None, 
+        update_streamlit=True,
+        height=GRID_H * 15,
+        width=GRID_W * 15,
+        drawing_mode="freedraw",
+        key="canvas",
+    )
+
+# --- 描画データの反映 ---
+if canvas_result.image_data is not None:
+    # キャンバスの描画データからグリッド座標へ変換
+    mask = canvas_result.image_data[:, :, 3] > 0 # 透明じゃない部分
+    if np.any(mask):
+        import cv2 # サイズ調整用
+        mask_resized = cv2.resize(mask.astype(np.uint8), (GRID_W, GRID_H), interpolation=cv2.INTER_NEAREST)
+        
+        if tool == "材料を配置":
+            st.session_state.material[mask_resized > 0] = selected_mat
+        elif tool == "熱を加える":
+            st.session_state.temp[mask_resized > 0] = MAX_TEMP
+        elif tool == "消しゴム":
+            st.session_state.material[mask_resized > 0] = 0
+            st.session_state.temp[mask_resized > 0] = AMBIENT_TEMP
+
+# --- シミュレーション実行と表示 ---
 placeholder = st.empty()
 
-# 実行ループ（最適化版）
+# 実行ループ
 while True:
-    if st.session_state.running:
-        st.session_state.temp = simulate_step(st.session_state.temp, st.session_state.material)
+    st.session_state.temp = simulate_step(st.session_state.temp, st.session_state.material)
     
-    # 画像生成（プレビューカーソル付き）
-    display_img = get_rgb_image(st.session_state.temp, st.session_state.material, px, py)
+    # 最終的な表示用画像
+    display_img = generate_preview()
+    placeholder.image(display_img, use_container_width=True)
     
-    # 描画更新
-    placeholder.image(display_img, use_container_width=True, clamp=True)
-    
-    # 負荷軽減のためのスリープ
-    time.sleep(0.03)
-    
-    # 操作があった場合に反映させるための再読み込みトリガー（Streamlitの仕様対応）
-    if not st.session_state.running:
-        break
+    time.sleep(0.05)
